@@ -33,7 +33,7 @@ func RunOnK8sCluster(restConfigProducer restconfig.Producer,
 	k8sConfig, err := restConfigProducer.ForCluster()
 	exit.OnErrorWithMessage(err, "Failed to initialize a Kubernetes config")
 
-	clientSet, err := kubernetes.NewForConfig(k8sConfig)
+	clientSet, err := kubernetes.NewForConfig(k8sConfig.Config)
 	exit.OnErrorWithMessage(err, "Failed to create Kubernetes client")
 
 	k8sClientSet := k8s.NewInterface(clientSet)

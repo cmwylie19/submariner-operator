@@ -110,15 +110,15 @@ func RunOnGCP(restConfigProducer restconfig.Producer, gwInstanceType string, ded
 	k8sConfig, err := restConfigProducer.ForCluster()
 	exit.OnErrorWithMessage(err, "Failed to initialize a Kubernetes config")
 
-	clientSet, err := kubernetes.NewForConfig(k8sConfig)
+	clientSet, err := kubernetes.NewForConfig(k8sConfig.Config)
 	exit.OnErrorWithMessage(err, "Failed to create Kubernetes client")
 
 	k8sClientSet := k8s.NewInterface(clientSet)
 
-	restMapper, err := util.BuildRestMapper(k8sConfig)
+	restMapper, err := util.BuildRestMapper(k8sConfig.Config)
 	exit.OnErrorWithMessage(err, "Failed to create restmapper")
 
-	dynamicClient, err := dynamic.NewForConfig(k8sConfig)
+	dynamicClient, err := dynamic.NewForConfig(k8sConfig.Config)
 	exit.OnErrorWithMessage(err, "Failed to create dynamic client")
 
 	gcpCloudInfo := gcp.CloudInfo{

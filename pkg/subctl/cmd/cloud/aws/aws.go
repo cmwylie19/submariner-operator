@@ -88,10 +88,10 @@ func RunOnAWS(restConfigProducer restconfig.Producer, gwInstanceType string,
 	k8sConfig, err := restConfigProducer.ForCluster()
 	exit.OnErrorWithMessage(err, "Failed to initialize a Kubernetes config")
 
-	restMapper, err := util.BuildRestMapper(k8sConfig)
+	restMapper, err := util.BuildRestMapper(k8sConfig.Config)
 	exit.OnErrorWithMessage(err, "Failed to create restmapper")
 
-	dynamicClient, err := dynamic.NewForConfig(k8sConfig)
+	dynamicClient, err := dynamic.NewForConfig(k8sConfig.Config)
 	exit.OnErrorWithMessage(err, "Failed to create dynamic client")
 
 	msDeployer := ocp.NewK8sMachinesetDeployer(restMapper, dynamicClient)
