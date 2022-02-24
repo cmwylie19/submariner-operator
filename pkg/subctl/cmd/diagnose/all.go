@@ -80,7 +80,7 @@ func diagnoseAll(cluster *cmd.Cluster) bool {
 
 	fmt.Println()
 
-	success = checkGlobalNet(cluster) && success
+	success = checkGlobalnet(cluster) && success
 
 	fmt.Println()
 

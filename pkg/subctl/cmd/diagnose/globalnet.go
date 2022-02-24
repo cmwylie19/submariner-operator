@@ -23,9 +23,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/submariner-io/submariner-operator/internal/cli"
+	"github.com/submariner-io/submariner-operator/pkg/reporter"
 	"github.com/submariner-io/submariner-operator/pkg/subctl/cmd"
+	submarinerv1 "github.com/submariner-io/submariner/pkg/apis/submariner.io/v1"
 	"github.com/submariner-io/submariner/pkg/globalnet/constants"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	mcsClientset "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned"
 )
@@ -36,127 +40,223 @@ func init() {
 		Short: "Check globalnet configuration",
 		Long:  "This command checks globalnet configuration",
 		Run: func(command *cobra.Command, args []string) {
-			cmd.ExecuteMultiCluster(restConfigProducer, checkGlobalNet)
+			cmd.ExecuteMultiCluster(restConfigProducer, checkGlobalnet)
 		},
 	})
 }
 
-func checkGlobalNet(cluster *cmd.Cluster) bool {
+func checkGlobalnet(cluster *cmd.Cluster) bool {
 	status := cli.NewStatus()
 
 	if cluster.Submariner == nil {
-		status.Start(cmd.SubmMissingMessage)
-		status.EndWith(cli.Warning)
+		status.Warning(cmd.SubmMissingMessage)
+		return true
+	}
 
+	if cluster.Submariner.Spec.GlobalCIDR == "" {
+		status.Success("Globalnet is not installed - skipping")
 		return true
 	}
 
 	status.Start("Checking Globalnet configuration")
+	defer status.End()
 
-	if cluster.Submariner.Spec.GlobalCIDR != "" {
-		checkClusterGlobalEgressIps(cluster, status)
-		checkGlobalEgressIps(cluster, status)
+	retValue := checkClusterGlobalEgressIps(cluster, status) &&
+		checkGlobalEgressIps(cluster, status) &&
 		checkGlobalIngressIps(cluster, status)
 
-		if status.HasFailureMessages() {
-			status.EndWith(cli.Failure)
-			return false
-		}
-
+	if retValue {
 		status.EndWithSuccess("Globalnet is enabled and properly configured")
-	} else {
-		status.EndWithSuccess("Globalnet is disabled")
 	}
 
-	return true
+	return retValue
 }
 
-func checkClusterGlobalEgressIps(cluster *cmd.Cluster, status *cli.Status) {
+func checkClusterGlobalEgressIps(cluster *cmd.Cluster, status reporter.Interface) bool {
 	clusterGlobalEgress, err := cluster.SubmClient.SubmarinerV1().ClusterGlobalEgressIPs(
 		corev1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		status.QueueFailureMessage(fmt.Sprintf("Error obtaining the clusterGlobalEgressIPs cr: %v", err))
-		return
+		status.Warning("Error listing the ClusterGlobalEgressIP resources: %v", err)
+		return false
 	}
 
 	if len(clusterGlobalEgress.Items) != 1 {
-		status.QueueFailureMessage(fmt.Sprintf("Number (%d) of clusterGlobalEgress resources != 1", len(clusterGlobalEgress.Items)))
-		return
+		status.Warning(
+			"Found %d ClusterGlobalEgressIP resources but only the default instance (%s) is supported",
+			len(clusterGlobalEgress.Items), constants.ClusterGlobalEgressIPName)
 	}
 
-	if clusterGlobalEgress.Items[0].Name != constants.ClusterGlobalEgressIPName {
-		status.QueueFailureMessage(fmt.Sprintf("clusterGlobalEgress name (%s) not equals to default name", clusterGlobalEgress.Items[0].Name))
-		return
+	foundDefaultResource := false
+	index := 0
+
+	for index = range clusterGlobalEgress.Items {
+		if clusterGlobalEgress.Items[index].Name == constants.ClusterGlobalEgressIPName {
+			foundDefaultResource = true
+			break
+		}
 	}
+
+	if !foundDefaultResource {
+		status.Failure("Couldn't find the default ClusterGlobalEgressIP resource(%s)", constants.ClusterGlobalEgressIPName)
+		return false
+	}
+
+	clusterGlobalEgressIP := clusterGlobalEgress.Items[index]
+
+	retValue := true
+	numberOfIPs := -1
+
+	if clusterGlobalEgressIP.Spec.NumberOfIPs != nil {
+		numberOfIPs = *clusterGlobalEgressIP.Spec.NumberOfIPs
+	}
+
+	if numberOfIPs != len(clusterGlobalEgressIP.Status.AllocatedIPs) {
+		status.Failure("The number of requested IPs (%d) does not match the number allocated (%d) for ClusterGlobalEgressIP %q",
+			numberOfIPs, len(clusterGlobalEgressIP.Status.AllocatedIPs), clusterGlobalEgressIP.Name)
+
+		retValue = false
+	}
+
+	condition := meta.FindStatusCondition(clusterGlobalEgressIP.Status.Conditions, string(submarinerv1.GlobalEgressIPAllocated))
+	if condition == nil {
+		status.Failure("ClusterGlobalEgressIP %q is missing the %q status condition", clusterGlobalEgressIP.Name,
+			submarinerv1.GlobalEgressIPAllocated)
+
+		retValue = false
+	} else if condition.Status != metav1.ConditionTrue {
+		status.Failure("The allocation of global IPs for ClusterGlobalEgressIP %q failed with reason %q and message %q",
+			clusterGlobalEgressIP.Name, condition.Reason, condition.Message)
+
+		retValue = false
+	}
+
+	return retValue
 }
 
-func checkGlobalEgressIps(cluster *cmd.Cluster, status *cli.Status) {
+func checkGlobalEgressIps(cluster *cmd.Cluster, status reporter.Interface) bool {
 	globalEgressIps, err := cluster.SubmClient.SubmarinerV1().GlobalEgressIPs(
 		corev1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		status.QueueFailureMessage(fmt.Sprintf("Error obtaining GlobalEgressIPs resources: %v", err))
-		return
+		status.Warning("Error obtaining GlobalEgressIPs resources: %v", err)
+		return false
 	}
+
+	retValue := true
 
 	for i := range globalEgressIps.Items {
-		if *globalEgressIps.Items[i].Spec.NumberOfIPs != len(globalEgressIps.Items[i].Status.AllocatedIPs) {
-			status.QueueFailureMessage(fmt.Sprintf("Error GlobalEgressIPs(%s) NumberOfIPs != AllocatedIPs", globalEgressIps.Items[i].Name))
-			return
+		gip := globalEgressIps.Items[i]
+		numberOfIPs := -1
+
+		if gip.Spec.NumberOfIPs != nil {
+			numberOfIPs = *gip.Spec.NumberOfIPs
+		}
+
+		if numberOfIPs != len(gip.Status.AllocatedIPs) {
+			status.Failure("The number of requested IPs (%d) does not match the number allocated (%d) for GlobalEgressIP %q",
+				numberOfIPs, len(gip.Status.AllocatedIPs), gip.Name)
+
+			retValue = false
 		}
 	}
+
+	return retValue
 }
 
-func checkGlobalIngressIps(cluster *cmd.Cluster, status *cli.Status) {
+func checkGlobalIngressIps(cluster *cmd.Cluster, status reporter.Interface) bool {
 	mcsClient, err := mcsClientset.NewForConfig(cluster.Config)
 	if err != nil {
-		status.QueueFailureMessage(fmt.Sprintf("Error obtaining mcs client: %v", err))
-		return
+		status.Warning("Error obtaining mcs client: %v", err)
+		return false
 	}
 
 	serviceExports, err := mcsClient.MulticlusterV1alpha1().ServiceExports(corev1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		status.QueueFailureMessage(fmt.Sprintf("Error obtaining ServiceExport resources: %v", err))
-		return
+		status.Warning("Error listing ServiceExport resources: %v", err)
+		return false
 	}
+
+	retValue := true
 
 	for i := range serviceExports.Items {
 		ns := serviceExports.Items[i].GetNamespace()
 		name := serviceExports.Items[i].GetName()
 
 		svc, err := cluster.KubeClient.CoreV1().Services(ns).Get(context.TODO(), name, metav1.GetOptions{})
-		if err != nil {
-			status.QueueFailureMessage(fmt.Sprintf("Error matching Service resource for exported service(%s,%s).%v", ns, name, err))
-			return
+
+		if apierrors.IsNotFound(err) {
+			status.Warning("No matching Service resource found for exported service \"%s/%s\"", ns, name)
+			continue
 		}
 
-		if svc.Spec.Type == corev1.ServiceTypeClusterIP {
-			globalIngress, err := cluster.SubmClient.SubmarinerV1().GlobalIngressIPs(ns).Get(context.TODO(), name, metav1.GetOptions{})
-			if err != nil {
-				status.QueueFailureMessage(fmt.Sprintf("Error no GlobalIngressIP resource allocated for service(%s,%s).%v", ns, name, err))
-				return
-			}
+		if err != nil {
+			status.Failure("Error retrieving Service \"%s/%s\", %v", ns, name, err)
 
-			if globalIngress.Status.AllocatedIP == "" {
-				status.QueueFailureMessage(fmt.Sprintf("Error GlobalIngressIP(%s,%s) - AllocatedIP is empty", ns, name))
-				return
-			}
+			retValue = false
 
-			svcs, err := cluster.KubeClient.CoreV1().Services(ns).List(
-				context.TODO(), metav1.ListOptions{LabelSelector: fmt.Sprintf("submariner.io/exportedServiceRef=%s", name)})
-			if err != nil {
-				status.QueueFailureMessage(fmt.Sprintf("Error finding internal service for exported service(%s,%s).%v", ns, name, err))
-				return
-			}
+			continue
+		}
 
-			if len(svcs.Items) != 1 {
-				status.QueueFailureMessage(fmt.Sprintf("Error finding internal service for exported service(%s,%s).%v", ns, name, err))
-				return
-			}
+		if svc.Spec.Type != corev1.ServiceTypeClusterIP {
+			continue
+		}
 
-			if svcs.Items[0].Spec.ExternalIPs[0] != globalIngress.Status.AllocatedIP {
-				status.QueueFailureMessage(fmt.Sprintf("GlobalIngressIP != ExternalIP of internal Service for exported service(%s,%s)", ns, name))
-				return
-			}
+		globalIngress, err := cluster.SubmClient.SubmarinerV1().GlobalIngressIPs(ns).Get(context.TODO(), name, metav1.GetOptions{})
+
+		if apierrors.IsNotFound(err) {
+			status.Failure("No matching GlobalIngressIP resource found for exported service \"%s/%s\"", ns, name)
+
+			retValue = false
+
+			continue
+		}
+
+		if err != nil {
+			status.Failure("Error retrieving GlobalIngressIP for exported service \"%s/%s\": %v", ns, name, err)
+			return false
+		}
+
+		if globalIngress.Status.AllocatedIP == "" {
+			status.Failure("No global IP was allocated for the GlobalIngressIP associated with exported service \"%s/%s\"", ns, name)
+
+			retValue = false
+
+			continue
+		}
+
+		svcs, err := cluster.KubeClient.CoreV1().Services(ns).List(
+			context.TODO(), metav1.ListOptions{LabelSelector: fmt.Sprintf("submariner.io/exportedServiceRef=%s", name)})
+		if err != nil {
+			status.Failure("Error listing internal Services \"%s/%s\": %v", ns, name, err)
+
+			retValue = false
+
+			continue
+		}
+
+		if len(svcs.Items) == 0 {
+			status.Failure("No internal service found for exported service \"%s/%s\"", ns, name)
+
+			retValue = false
+
+			continue
+		}
+
+		if len(svcs.Items) > 1 {
+			status.Failure("Found %d internal services for exported service \"%s/%s\" - expected 1", len(svcs.Items), ns, name)
+
+			retValue = false
+
+			continue
+		}
+
+		if svcs.Items[0].Spec.ExternalIPs[0] != globalIngress.Status.AllocatedIP {
+			status.Failure(
+				"The external IP (%s) for internal svc associated with exported svc \"%s/%s\" doesn't match allocated IP (%s) in GlobalIngressIP %q",
+				svcs.Items[0].Spec.ExternalIPs[0], ns, name, globalIngress.Status.AllocatedIP, globalIngress.Name)
+
+			retValue = false
 		}
 	}
+
+	return retValue
 }
