@@ -144,18 +144,14 @@ func getGCPCredentials() (*google.Credentials, error) {
 }
 
 func vpcPeerGcp(cmd *cobra.Command, args []string) {
-	// targetProjectID.ValidateFlags()
 	validatePeeringFlags()
 	reporter := cloudutils.NewStatusReporter()
-	reporter.Started("Initializing GCP connectivity")
 
-	//Create a GCP client with the credentials.
-
-	//Create a new client
+	//Create credentials for GCP client options
+	reporter.Started("Retrieving target GCP credentials from your GCP configuration")
 	creds, err := getGCPCredentials()
 	exit.OnErrorWithMessage(err, "Failed to get target GCP credentials")
 	reporter.Succeeded("")
-	reporter.Started("Initializing GCP connectivity")
 
 	options := []option.ClientOption{
 		option.WithCredentials(creds),
@@ -163,6 +159,8 @@ func vpcPeerGcp(cmd *cobra.Command, args []string) {
 	}
 	gcpClient, err := gcpClientIface.NewClient(targetProjectID, options)
 	exit.OnErrorWithMessage(err, "Failed to initialize a GCP Client")
+
+	reporter.Started("Initializing GCP connectivity")
 
 	gcpCloudInfo := pre.CloudInfo{
 		ProjectID: targetProjectID,
@@ -180,6 +178,7 @@ func vpcPeerGcp(cmd *cobra.Command, args []string) {
 			fmt.Println("SUCCESS SUCCESS SUCCESS")
 			fmt.Printf("Cloud %+v\n", cloud)
 			fmt.Printf("gwDeployer %+v\n", gwDeployer)
+			fmt.Printf("Target Cloud:\n%+v", targetCloud)
 			return nil
 			//return cloud.CreateVpcPeering(cloudpreparegcp.NewCloud(*targetCloud), reporter)
 		})
