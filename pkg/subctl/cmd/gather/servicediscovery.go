@@ -19,7 +19,12 @@ limitations under the License.
 package gather
 
 import (
+	"context"
+	"strings"
+
 	lhconstants "github.com/submariner-io/lighthouse/pkg/constants"
+	"github.com/submariner-io/submariner-operator/pkg/names"
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1beta1 "k8s.io/api/discovery/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -32,6 +37,7 @@ const (
 	lighthouseComponentsLabel = "component=submariner-lighthouse"
 	k8sCoreDNSPodLabel        = "k8s-app=kube-dns"
 	ocpCoreDNSPodLabel        = "dns.operator.openshift.io/daemonset-dns=default"
+	internalSvcLabel          = "submariner.io/exportedServiceRef"
 )
 
 func gatherServiceDiscoveryPodLogs(info *Info) {
@@ -110,8 +116,42 @@ func gatherConfigMapCoreDNS(info *Info) {
 	}
 }
 
+// gatherInternalServices gathers the internal service created for every exported submariner service.
+func gatherInternalServices(info *Info) {
+	services, err := info.ClientProducer.ForKubernetes().CoreV1().Services(corev1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		info.Status.Warning("Error gathering the internal service configuration: %v", err)
+	}
+
+	for k := range services.Items {
+		namespace := services.Items[k].Namespace
+		if !(strings.Contains(namespace, names.OperatorImage) || strings.Contains(namespace, "kube-system")) {
+			label := map[string]string{internalSvcLabel: services.Items[k].Name}
+			labelSelector := labels.Set(label).String()
+			service, err := info.ClientProducer.ForKubernetes().CoreV1().Services(namespace).List(context.TODO(),
+				metav1.ListOptions{LabelSelector: labelSelector})
+
+			if err != nil {
+				info.Status.Warning("Error gathering the internal service configuration: %v", err)
+			}
+
+			if len(service.Items) > 0 {
+				gatherInternalService(info, namespace, labelSelector)
+			}
+		}
+	}
+}
+
 func gatherConfigMapLighthouseDNS(info *Info, namespace string) {
 	gatherConfigMaps(info, namespace, metav1.ListOptions{LabelSelector: lighthouseComponentsLabel})
+}
+
+func gatherInternalService(info *Info, namespace, labelSelector string) {
+	ResourcesToYAMLFile(info, schema.GroupVersionResource{
+		Group:    corev1.SchemeGroupVersion.Group,
+		Version:  corev1.SchemeGroupVersion.Version,
+		Resource: "services",
+	}, namespace, metav1.ListOptions{LabelSelector: labelSelector})
 }
 
 func isCoreDNSTypeOcp(info *Info) bool {
