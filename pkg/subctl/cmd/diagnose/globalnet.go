@@ -105,7 +105,7 @@ func checkClusterGlobalEgressIps(cluster *cmd.Cluster, status reporter.Interface
 
 	clusterGlobalEgressIP := clusterGlobalEgress.Items[index]
 
-	numberOfIPs := -1
+	numberOfIPs := 1
 
 	if clusterGlobalEgressIP.Spec.NumberOfIPs != nil {
 		numberOfIPs = *clusterGlobalEgressIP.Spec.NumberOfIPs
@@ -136,7 +136,7 @@ func checkGlobalEgressIps(cluster *cmd.Cluster, status reporter.Interface) {
 
 	for i := range globalEgressIps.Items {
 		gip := globalEgressIps.Items[i]
-		numberOfIPs := -1
+		numberOfIPs := 1
 
 		if gip.Spec.NumberOfIPs != nil {
 			numberOfIPs = *gip.Spec.NumberOfIPs
@@ -145,6 +145,16 @@ func checkGlobalEgressIps(cluster *cmd.Cluster, status reporter.Interface) {
 		if numberOfIPs != len(gip.Status.AllocatedIPs) {
 			status.Failure("The number of requested IPs (%d) does not match the number allocated (%d) for GlobalEgressIP %q",
 				numberOfIPs, len(gip.Status.AllocatedIPs), gip.Name)
+		}
+
+		condition := meta.FindStatusCondition(gip.Status.Conditions, string(submarinerv1.GlobalEgressIPAllocated))
+		if condition == nil {
+			status.Failure("globalEgress %q is missing the %q status condition", gip.Name, submarinerv1.GlobalEgressIPAllocated)
+			continue
+		} else if condition.Status != metav1.ConditionTrue {
+			status.Failure("The allocation of global IPs for globalEgress %q failed with reason %q and message %q",
+				gip.Name, condition.Reason, condition.Message)
+			continue
 		}
 	}
 }
@@ -199,27 +209,43 @@ func checkGlobalIngressIps(cluster *cmd.Cluster, status reporter.Interface) {
 			continue
 		}
 
-		svcs, err := cluster.KubeClient.CoreV1().Services(ns).List(
-			context.TODO(), metav1.ListOptions{LabelSelector: fmt.Sprintf("submariner.io/exportedServiceRef=%s", name)})
-		if err != nil {
-			status.Failure("Error listing internal Services \"%s/%s\": %v", ns, name, err)
+		condition := meta.FindStatusCondition(globalIngress.Status.Conditions, string(submarinerv1.GlobalEgressIPAllocated))
+		if condition == nil {
+			status.Failure("globalIngress %q is missing the %q status condition", globalIngress.Name,
+				submarinerv1.GlobalEgressIPAllocated)
+			continue
+		} else if condition.Status != metav1.ConditionTrue {
+			status.Failure("The allocation of global IPs for globalIngress %q failed with reason %q and message %q",
+				globalIngress.Name, condition.Reason, condition.Message)
 			continue
 		}
 
-		if len(svcs.Items) == 0 {
-			status.Failure("No internal service found for exported service \"%s/%s\"", ns, name)
-			continue
-		}
+		verifyInternalService(cluster, status, ns, name, globalIngress)
+	}
+}
 
-		if len(svcs.Items) > 1 {
-			status.Failure("Found %d internal services for exported service \"%s/%s\" - expected 1", len(svcs.Items), ns, name)
-			continue
-		}
+func verifyInternalService(cluster *cmd.Cluster, status reporter.Interface, ns, name string, globalIngress *submarinerv1.GlobalIngressIP) {
+	svcs, err := cluster.KubeClient.CoreV1().Services(ns).List(
+		context.TODO(), metav1.ListOptions{LabelSelector: fmt.Sprintf("submariner.io/exportedServiceRef=%s", name)})
+	if err != nil {
+		status.Failure("Error listing internal Services \"%s/%s\": %v", ns, name, err)
+		return
+	}
 
-		if svcs.Items[0].Spec.ExternalIPs[0] != globalIngress.Status.AllocatedIP {
-			status.Failure(
-				"The external IP (%s) for internal svc associated with exported svc \"%s/%s\" doesn't match allocated IP (%s) in GlobalIngressIP %q",
-				svcs.Items[0].Spec.ExternalIPs[0], ns, name, globalIngress.Status.AllocatedIP, globalIngress.Name)
-		}
+	if len(svcs.Items) == 0 {
+		status.Failure("No internal service found for exported service \"%s/%s\"", ns, name)
+		return
+	}
+
+	if len(svcs.Items) > 1 {
+		status.Failure("Found %d internal services for exported service \"%s/%s\" - expected 1", len(svcs.Items), ns, name)
+		return
+	}
+
+	if svcs.Items[0].Spec.ExternalIPs[0] != globalIngress.Status.AllocatedIP {
+		status.Failure(
+			"The external IP (%s) for internal service associated with exported svc \"%s/%s\" doesn't"+
+				"match allocated IP (%s) in GlobalIngressIP %q",
+			svcs.Items[0].Spec.ExternalIPs[0], ns, name, globalIngress.Status.AllocatedIP, globalIngress.Name)
 	}
 }
