@@ -125,8 +125,6 @@ spec:
             - brokerK8sApiServer
             - brokerK8sRemoteNamespace
             - ceIPSecDebug
-            - ceIPSecPSK
-            - ceIPSecPSKSecret
             - clusterCIDR
             - clusterID
             - debug
