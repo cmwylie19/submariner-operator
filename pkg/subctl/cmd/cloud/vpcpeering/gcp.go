@@ -157,6 +157,7 @@ func vpcPeerGcp(cmd *cobra.Command, args []string) {
 		option.WithCredentials(creds),
 		option.WithUserAgent("open-cluster-management.io submarineraddon/v1"),
 	}
+
 	gcpClient, err := gcpClientIface.NewClient(targetProjectID, options)
 	exit.OnErrorWithMessage(err, "Failed to initialize a GCP Client")
 
@@ -170,17 +171,11 @@ func vpcPeerGcp(cmd *cobra.Command, args []string) {
 	}
 
 	targetCloud := cloudpreparegcp.NewCloud(gcpCloudInfo)
-	fmt.Printf("%+s", targetCloud)
 
 	// reporter.Succeeded("")
 	err1 := gcp.RunOnGCP(*parentRestConfigProducer, "", false,
 		func(cloud api.Cloud, gwDeployer api.GatewayDeployer, reporter api.Reporter) error {
-			fmt.Println("SUCCESS SUCCESS SUCCESS")
-			fmt.Printf("Cloud %+v\n", cloud)
-			fmt.Printf("gwDeployer %+v\n", gwDeployer)
-			fmt.Printf("Target Cloud:\n%+v", targetCloud)
-			return nil
-			//return cloud.CreateVpcPeering(cloudpreparegcp.NewCloud(*targetCloud), reporter)
+			return cloud.CreateVpcPeering(targetCloud, reporter)
 		})
 	if err1 != nil {
 		exit.OnErrorWithMessage(err, "Failed to create VPC Peering on GCP cloud")
